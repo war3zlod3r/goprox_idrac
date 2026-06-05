@@ -1,71 +1,58 @@
 package main
 
 import (
-	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/http/httputil"
 )
 
+// Helper function to dynamically get the preferred local IP
+func getLocalIP() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return "127.0.0.1" // Fallback to localhost if network is down
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String()
+}
+
 func main() {
-	log.Println("Starting HTTP proxy server on :8888")
+	localIP := getLocalIP()
+	log.Printf("Starting HTTP-to-HTTPS proxy on %s:8888", localIP)
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			log.Printf("Intercepting client request: %s %s%s", req.Method, req.Host, req.URL.Path)
+
+			req.URL.Scheme = "https"
+
+			if req.URL.Host == "" {
+				req.URL.Host = req.Host
+			}
+
+			if req.URL.Host == "downloads.dell.com:80" {
+				req.URL.Host = "downloads.dell.com"
+			}
+
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		},
+	}
 
 	server := &http.Server{
-		Addr:    ":8888",
-		Handler: http.HandlerFunc(proxyHandler),
+		Addr: ":8888",
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodConnect {
+				log.Printf("Rejecting CONNECT tunnel request from %s. Please configure iDRAC to use HTTP for updates.", r.RemoteAddr)
+				http.Error(w, "HTTPS CONNECT tunneling not supported. Use HTTP endpoint.", http.StatusMethodNotAllowed)
+				return
+			}
+			
+			proxy.ServeHTTP(w, r)
+		}),
 	}
 
 	log.Fatal(server.ListenAndServe())
-}
-
-func proxyHandler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Received request: %s %s %s", r.Method, r.Host, r.URL.Path)
-
-	// We need the full URL for the outbound request
-	if r.URL.Scheme == "" {
-		r.URL.Scheme = "https" // Assume HTTPS if not specified
-	}
-	if r.URL.Host == "" {
-		r.URL.Host = r.Host
-	}
-
-	// Create a new request to send to the destination server
-	outReq, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
-	if err != nil {
-		log.Printf("Error creating outbound request: %v", err)
-		http.Error(w, "Error creating outbound request", http.StatusInternalServerError)
-		return
-	}
-
-	// Copy headers from the client request to the outbound request
-	for key, values := range r.Header {
-		for _, value := range values {
-			outReq.Header.Add(key, value)
-		}
-	}
-	// Remove headers that are specific to the proxy connection
-	outReq.Header.Del("Proxy-Connection")
-	outReq.Header.Del("Proxy-Authorization")
-
-	// Send the request to the destination
-	client := &http.Client{}
-	resp, err := client.Do(outReq)
-	if err != nil {
-		log.Printf("Error sending outbound request: %v", err)
-		http.Error(w, "Error sending outbound request", http.StatusServiceUnavailable)
-		return
-	}
-	defer resp.Body.Close()
-
-	log.Printf("Received response %s for %s", resp.Status, r.URL.String())
-
-	// Copy headers from the destination's response to our response for the client
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-
-	// Write the status code and copy the body
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
 }
