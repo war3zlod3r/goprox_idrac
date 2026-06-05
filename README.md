@@ -29,8 +29,8 @@ Many applications and systems have defective or problematic SSL/TLS implementati
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/albal/goprox.git
-cd goprox
+git clone https://github.com/war3zlod3r/goprox_idrac.git
+cd goprox_idrac
 ```
 
 2. Initialize the Go module and build:
